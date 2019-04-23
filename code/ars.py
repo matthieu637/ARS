@@ -10,6 +10,7 @@ import time
 import os
 import numpy as np
 import gym
+import roboschool
 import logz
 import ray
 import utils
@@ -30,6 +31,7 @@ class Worker(object):
                  deltas=None,
                  rollout_length=1000,
                  delta_std=0.02):
+        import roboschool
 
         # initialize OpenAI environment for each worker
         self.env = gym.make(env_name)
@@ -101,6 +103,7 @@ class Worker(object):
                 # default rollout length (1000 for the MuJoCo locomotion tasks)
                 reward, r_steps = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
                 rollout_rewards.append(reward)
+                steps += r_steps
                 
             else:
                 idx, delta = self.deltas.get_delta(w_policy.size)
@@ -165,6 +168,7 @@ class ARSLearner(object):
         self.timesteps = 0
         self.action_size = env.action_space.shape[0]
         self.ob_size = env.observation_space.shape[0]
+        self.max_steps = env.spec.timestep_limit
         self.num_deltas = num_deltas
         self.deltas_used = deltas_used
         self.rollout_length = rollout_length
@@ -236,22 +240,28 @@ class ARSLearner(object):
         results_one = ray.get(rollout_ids_one)
         results_two = ray.get(rollout_ids_two)
 
-        rollout_rewards, deltas_idx = [], [] 
+        rollout_rewards, deltas_idx, rollout_steps = [], [], []
 
         for result in results_one:
             if not evaluate:
                 self.timesteps += result["steps"]
+            else:
+                rollout_steps.append(result["steps"])
+
             deltas_idx += result['deltas_idx']
             rollout_rewards += result['rollout_rewards']
 
         for result in results_two:
             if not evaluate:
                 self.timesteps += result["steps"]
+            else:
+                rollout_steps.append(result["steps"])
             deltas_idx += result['deltas_idx']
             rollout_rewards += result['rollout_rewards']
 
         deltas_idx = np.array(deltas_idx)
         rollout_rewards = np.array(rollout_rewards, dtype = np.float64)
+        rollout_steps = np.array(rollout_steps)
         
         print('Maximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
@@ -259,7 +269,7 @@ class ARSLearner(object):
         print('Time to generate rollouts:', t2 - t1)
 
         if evaluate:
-            return rollout_rewards
+            return rollout_rewards, rollout_steps
 
         # select top performing directions if deltas_used < num_deltas
         max_rewards = np.max(rollout_rewards, axis = 1)
@@ -296,10 +306,10 @@ class ARSLearner(object):
         return
 
     def train(self, num_iter):
-
+        testing_each=20
         start = time.time()
-        for i in range(num_iter):
-            
+        i=0
+        while self.timesteps < num_iter + testing_each * self.max_steps * self.num_workers:
             t1 = time.time()
             self.train_step()
             t2 = time.time()
@@ -307,19 +317,15 @@ class ARSLearner(object):
             print('iter ', i,' done')
 
             # record statistics every 10 iterations
-            if ((i + 1) % 10 == 0):
-                
-                rewards = self.aggregate_rollouts(num_rollouts = 100, evaluate = True)
+            if ((i + 1) % testing_each == 0):
+                rewards,steps = self.aggregate_rollouts(num_rollouts = 1, evaluate = True)
                 w = ray.get(self.workers[0].get_weights_plus_stats.remote())
                 np.savez(self.logdir + "/lin_policy_plus", w)
                 
                 print(sorted(self.params.items()))
-                logz.log_tabular("Time", time.time() - start)
-                logz.log_tabular("Iteration", i + 1)
-                logz.log_tabular("AverageReward", np.mean(rewards))
-                logz.log_tabular("StdRewards", np.std(rewards))
-                logz.log_tabular("MaxRewardRollout", np.max(rewards))
-                logz.log_tabular("MinRewardRollout", np.min(rewards))
+                logz.log_tabular("r", np.mean(rewards))
+                logz.log_tabular("l", np.mean(steps))
+                logz.log_tabular("t", time.time() - start)
                 logz.log_tabular("timesteps", self.timesteps)
                 logz.dump_tabular()
                 
@@ -342,6 +348,7 @@ class ARSLearner(object):
             ray.get(increment_filters_ids)            
             t2 = time.time()
             print('Time to sync statistics:', t2 - t1)
+            i+=1
                         
         return 
 
@@ -394,6 +401,7 @@ if __name__ == '__main__':
     parser.add_argument('--delta_std', '-std', type=float, default=.03)
     parser.add_argument('--n_workers', '-e', type=int, default=18)
     parser.add_argument('--rollout_length', '-r', type=int, default=1000)
+    parser.add_argument('--port', '-p', type=int, default=6379)
 
     # for Swimmer-v1 and HalfCheetah-v1 use shift = 0
     # for Hopper-v1, Walker2d-v1, and Ant-v1 use shift = 1
@@ -407,9 +415,8 @@ if __name__ == '__main__':
     parser.add_argument('--filter', type=str, default='MeanStdFilter')
 
     local_ip = socket.gethostbyname(socket.gethostname())
-    ray.init(redis_address= local_ip + ':6379')
-    
     args = parser.parse_args()
     params = vars(args)
+    ray.init(redis_address= local_ip + ':' + str(params['port']))
     run_ars(params)
 
