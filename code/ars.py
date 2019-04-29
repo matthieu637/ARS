@@ -306,7 +306,11 @@ class ARSLearner(object):
         return
 
     def train(self, num_iter):
-        testing_each=20
+        #one iteration is proportial to n_directions
+        #testing_each=20
+        testing_each=int(20/self.num_deltas)
+        if testing_each == 0:
+            testing_each=1
         start = time.time()
         i=0
         while self.timesteps < num_iter + testing_each * self.max_steps * self.num_workers:
@@ -314,7 +318,7 @@ class ARSLearner(object):
             self.train_step()
             t2 = time.time()
             print('total time of one step', t2 - t1)           
-            print('iter ', i,' done')
+            print('iter ', i,' done', self.timesteps)
 
             # record statistics every 10 iterations
             if ((i + 1) % testing_each == 0):
