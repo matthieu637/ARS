@@ -44,6 +44,8 @@ class Worker(object):
         self.policy_params = policy_params
         if policy_params['type'] == 'linear':
             self.policy = LinearPolicy(policy_params)
+        elif policy_params['type'] == 'mlp':
+            self.policy = MLPPolicy(policy_params)
         else:
             raise NotImplementedError
             
@@ -55,7 +57,6 @@ class Worker(object):
         """ 
         Get current policy weights and current statistics of past states.
         """
-        assert self.policy_params['type'] == 'linear'
         return self.policy.get_weights_plus_stats()
     
 
@@ -201,9 +202,11 @@ class ARSLearner(object):
         # initialize policy 
         if policy_params['type'] == 'linear':
             self.policy = LinearPolicy(policy_params)
-            self.w_policy = self.policy.get_weights()
+        elif policy_params['type'] == 'mlp':
+            self.policy = MLPPolicy(policy_params)
         else:
             raise NotImplementedError
+        self.w_policy = self.policy.get_weights()
             
         # initialize optimization algorithm
         self.optimizer = optimizers.SGD(self.w_policy, self.step_size)        
@@ -371,7 +374,7 @@ def run_ars(params):
     ac_dim = env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
-    policy_params={'type':'linear',
+    policy_params={'type':params['policy_type'],
                    'ob_filter':params['filter'],
                    'ob_dim':ob_dim,
                    'ac_dim':ac_dim}
